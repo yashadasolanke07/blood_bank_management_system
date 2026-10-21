@@ -1,0 +1,38 @@
+# Environments & Secrets
+.env
+.env.local
+.env.*.local
+*.secret
+config.json
+
+# C++ Build & Output files
+build/
+bin/
+out/
+CMakeFiles/
+CMakeCache.txt
+*.cmake
+*.exe
+*.obj
+*.o
+*.dll
+*.so
+*.dylib
+*.pdb
+*.ilk
+
+# Node / React Frontend
+node_modules/
+dist/
+.npm
+npm-debug.log*
+
+# IDE & OS files
+.vscode/
+.idea/
+*.suo
+*.user
+Thumbs.db
+[Dd]esktop.ini
+.DS_Store
+

@@ -56,8 +56,7 @@ CREATE TABLE `users` (
     PRIMARY KEY (`user_id`),
     UNIQUE KEY `uq_users_email` (`email`),
     UNIQUE KEY `uq_users_phone` (`phone`),
-    INDEX `idx_users_role` (`role`),
-    CONSTRAINT `chk_user_dob` CHECK (`date_of_birth` <= CURRENT_DATE)
+    INDEX `idx_users_role` (`role`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 2. DONORS TABLE :- Specialization of User. Inherits core identity from `users`.
@@ -216,7 +215,7 @@ CREATE TABLE `donation_appointments` (
     `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (`donation_appt_id`),
-    INDEX `idx_don_appt_test` (`medical_test_id`),
+    UNIQUE KEY `uq_don_appt_test` (`medical_test_id`),
     INDEX `idx_don_appt_donor` (`donor_id`),
     INDEX `idx_don_appt_hospital` (`hospital_id`),
     CONSTRAINT `fk_don_appt_test` FOREIGN KEY (`medical_test_id`)
@@ -375,7 +374,7 @@ CREATE TABLE `allocations` (
         ON DELETE RESTRICT ON UPDATE CASCADE,
     CONSTRAINT `fk_alloc_unit` FOREIGN KEY (`unit_id`)
         REFERENCES `blood_units` (`unit_id`)
-        ON DELETE RESTRICT ON UPDATE CASCADE,
+        ON DELETE RESTRICT ON UPDATE RESTRICT,
     CONSTRAINT `fk_alloc_staff` FOREIGN KEY (`allocated_by`)
         REFERENCES `users` (`user_id`)
         ON DELETE RESTRICT ON UPDATE CASCADE
@@ -384,6 +383,29 @@ CREATE TABLE `allocations` (
 -- 15. TRIGGERS FOR DATA INTEGRITY AND REAL-TIME SYNC
 
 DELIMITER $$
+
+-- Trigger 0: Prevent future date of birth on users
+DROP TRIGGER IF EXISTS `trg_users_check_dob_before_insert`$$
+CREATE TRIGGER `trg_users_check_dob_before_insert`
+BEFORE INSERT ON `users`
+FOR EACH ROW
+BEGIN
+    IF NEW.`date_of_birth` > CURRENT_DATE THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Error: User date_of_birth cannot be in the future.';
+    END IF;
+END$$
+
+DROP TRIGGER IF EXISTS `trg_users_check_dob_before_update`$$
+CREATE TRIGGER `trg_users_check_dob_before_update`
+BEFORE UPDATE ON `users`
+FOR EACH ROW
+BEGIN
+    IF NEW.`date_of_birth` > CURRENT_DATE THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Error: User date_of_birth cannot be in the future.';
+    END IF;
+END$$
 
 -- Trigger 1: Validate unit eligibility before allocation
 DROP TRIGGER IF EXISTS `trg_validate_unit_before_allocation`$$
@@ -396,16 +418,20 @@ BEGIN
     DECLARE v_expiry_date DATE;
     DECLARE v_unit_bank_id INT UNSIGNED;
     DECLARE v_request_bank_id INT UNSIGNED;
+    DECLARE v_unit_blood_group VARCHAR(10);
+    DECLARE v_unit_component VARCHAR(30);
+    DECLARE v_request_blood_group VARCHAR(10);
+    DECLARE v_request_component VARCHAR(30);
 
     -- Fetch unit details
-    SELECT `status`, `test_status`, `expiry_date`, `blood_bank_id`
-    INTO v_unit_status, v_test_status, v_expiry_date, v_unit_bank_id
+    SELECT `status`, `test_status`, `expiry_date`, `blood_bank_id`, `blood_group`, `component_type`
+    INTO v_unit_status, v_test_status, v_expiry_date, v_unit_bank_id, v_unit_blood_group, v_unit_component
     FROM `blood_units`
     WHERE `unit_id` = NEW.`unit_id`;
 
-    -- Fetch request bank
-    SELECT `blood_bank_id`
-    INTO v_request_bank_id
+    -- Fetch request details
+    SELECT `blood_bank_id`, `blood_group`, `component_type`
+    INTO v_request_bank_id, v_request_blood_group, v_request_component
     FROM `blood_requests`
     WHERE `request_id` = NEW.`request_id`;
 
@@ -433,6 +459,18 @@ BEGIN
         IF v_unit_bank_id != v_request_bank_id THEN
             SIGNAL SQLSTATE '45000'
                 SET MESSAGE_TEXT = 'Error: Blood unit does not belong to the blood bank handling this request.';
+        END IF;
+
+        -- Ensure unit blood group matches the requested blood group
+        IF v_unit_blood_group != v_request_blood_group THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Error: Blood unit blood group does not match the requested blood group.';
+        END IF;
+
+        -- Ensure component type matches the request
+        IF v_unit_component != v_request_component THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Error: Blood unit component type does not match the requested component.';
         END IF;
     END IF;
 END$$
@@ -466,6 +504,12 @@ BEGIN
     ELSEIF NEW.`allocation_status` = 'TRANSFUSED' THEN
         UPDATE `blood_units`
         SET `status` = 'TRANSFUSED'
+        WHERE `unit_id` = NEW.`unit_id`;
+    -- If allocation reactivated to RESERVED or DISPATCHED
+    ELSEIF NEW.`allocation_status` IN ('RESERVED', 'DISPATCHED')
+       AND OLD.`allocation_status` NOT IN ('RESERVED', 'DISPATCHED') THEN
+        UPDATE `blood_units`
+        SET `status` = 'ALLOCATED'
         WHERE `unit_id` = NEW.`unit_id`;
     END IF;
 END$$

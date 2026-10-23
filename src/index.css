@@ -1,0 +1,106 @@
+@import "tailwindcss";
+
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #1f2937;
+  background: #f8fafc;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}* {
+  box-sizing: border-box;
+}body {
+  margin: 0;
+  min-width: 320px;
+}button, input, select, textarea {
+  font: inherit;
+}button {
+  cursor: pointer;
+}::selection {
+  background: #fecaca;
+  color: #7f1d1d;
+}.sidebar-link {
+  display:flex;
+  align-items:center;
+  gap:.75rem;
+  width:100%;
+  padding:.7rem .85rem;
+  border-radius:.75rem;
+  color:#cbd5e1;
+  font-size:.9rem;
+  transition:all .15s;
+  text-align:left;
+}.sidebar-link:hover {
+  background:#7f1d1d;
+  color:white;
+}.sidebar-link.active {
+  background:#b91c1c;
+  color:white;
+  box-shadow:0 6px 18px #450a0a40;
+}.panel {
+  background:white;
+  border:1px solid #e5e7eb;
+  border-radius:1rem;
+}.field {
+  width:100%;
+  border:1px solid #d1d5db;
+  border-radius:.65rem;
+  padding:.65rem .8rem;
+  outline:none;
+  background:white;
+}.field:focus {
+  border-color:#dc2626;
+  box-shadow:0 0 0 3px #fee2e2;
+}.btn-primary {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:.45rem;
+  border-radius:.65rem;
+  background:#b91c1c;
+  color:white;
+  padding:.65rem .9rem;
+  font-weight:600;
+  font-size:.875rem;
+}.btn-primary:hover {
+  background:#991b1b;
+}.btn-secondary {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:.45rem;
+  border:1px solid #e5e7eb;
+  border-radius:.65rem;
+  background:white;
+  color:#374151;
+  padding:.6rem .85rem;
+  font-weight:500;
+  font-size:.875rem;
+}.btn-secondary:hover {
+  background:#f9fafb;
+}.status {
+  display:inline-flex;
+  align-items:center;
+  border-radius:999px;
+  padding:.25rem .6rem;
+  font-size:.75rem;
+  font-weight:600;
+}.table-wrap {
+  overflow-x:auto;
+}table {
+  width:100%;
+  border-collapse:collapse;
+  white-space:nowrap;
+}th {
+  color:#6b7280;
+  font-size:.72rem;
+  text-transform:uppercase;
+  letter-spacing:.06em;
+  font-weight:700;
+  background:#f9fafb;
+}th, td {
+  padding:.9rem 1rem;
+  text-align:left;
+  border-bottom:1px solid #f1f5f9;
+}tr:last-child td {
+  border-bottom:0;
+}

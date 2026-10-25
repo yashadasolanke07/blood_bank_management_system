@@ -7,24 +7,56 @@ import Modal from '../components/common/Modal.jsx';
 import TextField from '../components/common/TextField.jsx';
 import Badge from '../components/common/Badge.jsx';
 import StatusBadge from '../components/common/StatusBadge.jsx';
-export default function Requests({ requests, setRequests, inventory, setInventory }) {
+import { createRequest, fulfillRequest, updateRequestStatus } from '../services/api.js';
+
+export default function Requests({ requests, inventory, onRefresh }) {
     const [search, setSearch] = useState('');
     const [filter, setFilter] = useState('All');
     const [modal, setModal] = useState(false);
-    const [form, setForm] = useState({ patient: '', hospital: '', blood: 'O+', units: '1', date: new Date().toISOString().slice(0, 10), priority: 'Normal', status: 'Pending' });
+    const [form, setForm] = useState({ patient: '', hospital: 'City Care Hospital', blood: 'O+', units: '1', date: new Date().toISOString().slice(0, 10), priority: 'Normal', status: 'Pending' });
     const filtered = requests.filter(r => (`${r.id} ${r.patient} ${r.hospital} ${r.blood}`.toLowerCase().includes(search.toLowerCase())) && (filter === 'All' || r.status === filter));
-    const updateStatus = (r, status) => {
-        if (status === 'Fulfilled' && r.status !== 'Fulfilled') {
-            const stock = inventory.find(i => i.blood === r.blood);
-            if (!stock || stock.units < r.units) {
-                alert(`Not enough ${r.blood} units in the demo inventory to fulfill this request.`);
+
+    const updateStatus = async (r, status) => {
+        const rawId = r.id.replace('REQ-', '');
+        if (status === 'Fulfilled') {
+            try {
+                const res = await fulfillRequest(rawId);
+                if (onRefresh) {
+                    await onRefresh();
+                }
+                alert(res?.message || 'Blood unit allocated successfully! MySQL trigger updated inventory.');
+            } catch (err) {
+                alert(`Cannot fulfill: ${err.message}`);
                 return;
             }
-            setInventory(items => items.map(i => i.blood === r.blood ? { ...i, units: i.units - Number(r.units) } : i));
+        } else {
+            try {
+                await updateRequestStatus(rawId, status);
+                if (onRefresh) {
+                    await onRefresh();
+                }
+            } catch (err) {
+                alert(`Failed to update status in database: ${err.message}`);
+            }
         }
-        setRequests(rs => rs.map(x => x.id === r.id ? { ...x, status } : x));
     };
-    const save = e => { e.preventDefault(); setRequests(rs => [{ ...form, id: `REQ-${Date.now().toString().slice(-5)}`, units: Number(form.units) }, ...rs]); setModal(false); setForm({ patient: '', hospital: '', blood: 'O+', units: '1', date: new Date().toISOString().slice(0, 10), priority: 'Normal', status: 'Pending' }); };
+
+    const save = async e => {
+        e.preventDefault();
+        try {
+            await createRequest(form);
+            if (onRefresh) {
+                await onRefresh();
+            }
+            alert('Blood request submitted successfully!');
+        } catch (err) {
+            console.error("Failed to save request to database:", err);
+            alert(`Error saving request: ${err.message}`);
+        }
+        setModal(false);
+        setForm({ patient: '', hospital: 'City Care Hospital', blood: 'O+', units: '1', date: new Date().toISOString().slice(0, 10), priority: 'Normal', status: 'Pending' });
+    };
+
     return <div>
             <PageTitle title="Blood requests" subtitle="Review, prioritize and track requests from hospitals and recipients." action={<button className="btn-primary" onClick={() => setModal(true)}>
             <Plus size={17}/> New request</button>}/>
@@ -52,8 +84,8 @@ export default function Requests({ requests, setRequests, inventory, setInventor
     {modal && <Modal title="Create blood request" onClose={() => setModal(false)}>
             <form onSubmit={save} className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">
-            <TextField label="Patient name" value={form.patient} onChange={v => setForm({ ...form, patient: v })} required/>
-            <TextField label="Hospital / facility" value={form.hospital} onChange={v => setForm({ ...form, hospital: v })} required/>
+            <TextField label="Patient name" value={form.patient} onChange={v => setForm({ ...form, patient: v })} required placeholder="Enter patient name"/>
+            <TextField label="Hospital / facility" value={form.hospital} onChange={v => setForm({ ...form, hospital: v })} required placeholder="Enter hospital name"/>
             <TextField label="Blood group" value={form.blood} onChange={v => setForm({ ...form, blood: v })} options={['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']}/>
             <TextField label="Units requested" value={form.units} onChange={v => setForm({ ...form, units: v })} type="number" required/>
             <TextField label="Request date" value={form.date} onChange={v => setForm({ ...form, date: v })} type="date" required/>
@@ -67,4 +99,3 @@ export default function Requests({ requests, setRequests, inventory, setInventor
             </Modal>}
   </div>;
 }
-

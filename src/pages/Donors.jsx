@@ -6,7 +6,9 @@ import DataTable from '../components/common/DataTable.jsx';
 import Modal from '../components/common/Modal.jsx';
 import TextField from '../components/common/TextField.jsx';
 import StatusBadge from '../components/common/StatusBadge.jsx';
-export default function Donors({ donors, setDonors }) {
+import { createDonor } from '../services/api.js';
+
+export default function Donors({ donors, onRefresh }) {
     const [search, setSearch] = useState('');
     const [modal, setModal] = useState(false);
     const [editing, setEditing] = useState(null);
@@ -14,17 +16,24 @@ export default function Donors({ donors, setDonors }) {
     const filtered = donors.filter(d => `${d.name} ${d.id} ${d.blood} ${d.city} ${d.phone}`.toLowerCase().includes(search.toLowerCase()));
     const openNew = () => { setEditing(null); setForm({ name: '', blood: 'O+', age: '', phone: '', city: 'Pune', lastDonation: '', status: 'Active' }); setModal(true); };
     const openEdit = d => { setEditing(d); setForm({ ...d }); setModal(true); };
-    const save = e => {
+
+    const save = async e => {
         e.preventDefault();
-        if (editing)
-            setDonors(ds => ds.map(d => d.id === editing.id ? { ...form, age: Number(form.age), id: editing.id } : d));
-        else
-            setDonors(ds => [{ ...form, age: Number(form.age), id: `D-${Date.now().toString().slice(-6)}` }, ...ds]);
+        try {
+            await createDonor(form);
+            if (onRefresh) {
+                await onRefresh();
+            }
+            alert('Donor registered successfully in database!');
+        } catch (err) {
+            console.error("Failed to save donor to database:", err);
+            alert(`Error saving donor: ${err.message}`);
+        }
         setModal(false);
     };
+
     const remove = d => {
-        if (window.confirm(`Delete donor ${d.name}?`))
-            setDonors(ds => ds.filter(x => x.id !== d.id));
+        alert(`Donor ${d.name} (${d.id}) is linked to clinical records and donation history in MySQL.`);
     };
     return <div>
             <PageTitle title="Donor management" subtitle="Register donors and keep contact and donation details up to date." action={<button className="btn-primary" onClick={openNew}>
@@ -76,4 +85,3 @@ export default function Donors({ donors, setDonors }) {
             </Modal>}
   </div>;
 }
-

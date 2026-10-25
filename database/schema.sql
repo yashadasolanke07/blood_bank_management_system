@@ -461,10 +461,19 @@ BEGIN
                 SET MESSAGE_TEXT = 'Error: Blood unit does not belong to the blood bank handling this request.';
         END IF;
 
-        -- Ensure unit blood group matches the requested blood group
-        IF v_unit_blood_group != v_request_blood_group THEN
+        -- Ensure unit blood group is compatible with the requested blood group
+        IF NOT (
+            (v_request_blood_group = 'AB+') OR
+            (v_request_blood_group = 'AB-' AND v_unit_blood_group IN ('AB-', 'A-', 'B-', 'O-')) OR
+            (v_request_blood_group = 'A+'  AND v_unit_blood_group IN ('A+', 'A-', 'O+', 'O-')) OR
+            (v_request_blood_group = 'A-'  AND v_unit_blood_group IN ('A-', 'O-')) OR
+            (v_request_blood_group = 'B+'  AND v_unit_blood_group IN ('B+', 'B-', 'O+', 'O-')) OR
+            (v_request_blood_group = 'B-'  AND v_unit_blood_group IN ('B-', 'O-')) OR
+            (v_request_blood_group = 'O+'  AND v_unit_blood_group IN ('O+', 'O-')) OR
+            (v_request_blood_group = 'O-'  AND v_unit_blood_group = 'O-')
+        ) THEN
             SIGNAL SQLSTATE '45000'
-                SET MESSAGE_TEXT = 'Error: Blood unit blood group does not match the requested blood group.';
+                SET MESSAGE_TEXT = 'Error: Blood unit blood group is not compatible with the requested blood group.';
         END IF;
 
         -- Ensure component type matches the request
@@ -588,6 +597,28 @@ FROM `blood_requests` br
 LEFT JOIN `allocations` a ON br.`request_id` = a.`request_id`
 GROUP BY br.`request_id`, br.`patient_name`, br.`blood_group`, br.`component_type`,
          br.`quantity_requested`, br.`urgency`, br.`status`, br.`required_by_date`;
+
+-- View E: Hospital-wise and blood group-wise available stock summary
+CREATE OR REPLACE VIEW `v_hospital_blood_inventory` AS
+SELECT 
+    h.`hospital_id`,
+    h.`name` AS `hospital_name`,
+    COUNT(CASE WHEN bu.`blood_group` = 'A+'  THEN 1 END) AS `A+`,
+    COUNT(CASE WHEN bu.`blood_group` = 'A-'  THEN 1 END) AS `A-`,
+    COUNT(CASE WHEN bu.`blood_group` = 'B+'  THEN 1 END) AS `B+`,
+    COUNT(CASE WHEN bu.`blood_group` = 'B-'  THEN 1 END) AS `B-`,
+    COUNT(CASE WHEN bu.`blood_group` = 'AB+' THEN 1 END) AS `AB+`,
+    COUNT(CASE WHEN bu.`blood_group` = 'AB-' THEN 1 END) AS `AB-`,
+    COUNT(CASE WHEN bu.`blood_group` = 'O+'  THEN 1 END) AS `O+`,
+    COUNT(CASE WHEN bu.`blood_group` = 'O-'  THEN 1 END) AS `O-`,
+    COUNT(bu.`unit_id`) AS `total_units`
+FROM `hospitals` h
+LEFT JOIN `donations` d ON h.`hospital_id` = d.`hospital_id`
+LEFT JOIN `blood_units` bu ON d.`donation_id` = bu.`donation_id`
+    AND bu.`status` = 'AVAILABLE'
+    AND bu.`test_status` = 'NEGATIVE_CLEARED'
+    AND bu.`expiry_date` >= CURRENT_DATE
+GROUP BY h.`hospital_id`, h.`name`;
 
 -- Restore system configurations
 SET SQL_MODE = @OLD_SQL_MODE;

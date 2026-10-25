@@ -6,7 +6,9 @@ import DataTable from '../components/common/DataTable.jsx';
 import Modal from '../components/common/Modal.jsx';
 import TextField from '../components/common/TextField.jsx';
 import StatCard from '../components/common/StatCard.jsx';
-export default function Donations({ donations, setDonations, donors }) {
+import { createDonation } from '../services/api.js';
+
+export default function Donations({ donations, donors, onRefresh }) {
   const [modal, setModal] = useState(false);
   const [search, setSearch] = useState('');
   const [form, setForm] = useState({
@@ -14,19 +16,35 @@ export default function Donations({ donations, setDonations, donors }) {
     blood: 'O+',
     units: '1',
     date: new Date().toISOString().slice(0, 10),
-    location: 'Main Center',
+    location: 'City Care Hospital',
   });
+
   const filtered = donations.filter((d) =>
     `${d.id} ${d.donor} ${d.blood} ${d.location}`.toLowerCase().includes(search.toLowerCase()),
   );
-  const save = (e) => {
+
+  const save = async (e) => {
     e.preventDefault();
-    setDonations((ds) => [
-      { ...form, id: `DON-${Date.now().toString().slice(-5)}`, units: Number(form.units) },
-      ...ds,
-    ]);
+    try {
+      await createDonation(form);
+      if (onRefresh) {
+        await onRefresh();
+      }
+      alert('Donation successfully recorded in database! New blood bags added to inventory.');
+    } catch (err) {
+      console.error('Failed to save donation:', err);
+      alert(`Error saving donation: ${err.message}`);
+    }
     setModal(false);
+    setForm({
+      donor: '',
+      blood: 'O+',
+      units: '1',
+      date: new Date().toISOString().slice(0, 10),
+      location: 'City Care Hospital',
+    });
   };
+
   return (
     <div>
       <PageTitle
@@ -42,21 +60,21 @@ export default function Donations({ donations, setDonations, donors }) {
         <StatCard
           label="Donation records"
           value={donations.length}
-          note="In this demo"
+          note="Total recorded sessions"
           icon={HandHeart}
           color="red"
         />
         <StatCard
           label="Units collected"
           value={donations.reduce((s, d) => s + Number(d.units), 0)}
-          note="Across recorded donations"
+          note="Total units"
           icon={Droplet}
           color="green"
         />
         <StatCard
-          label="Active donors"
-          value={donors.filter((d) => d.status === 'Active').length}
-          note="Eligible status not clinically verified"
+          label="Registered donors"
+          value={donors.length}
+          note="Total in system"
           icon={Users}
           color="blue"
         />
@@ -93,6 +111,7 @@ export default function Donations({ donations, setDonations, donors }) {
                   setForm({ ...form, donor: v, blood: d?.blood || form.blood });
                 }}
                 options={['', ...donors.map((d) => d.name)]}
+                required
               />
               <TextField
                 label="Blood group"
@@ -101,7 +120,7 @@ export default function Donations({ donations, setDonations, donors }) {
                 options={['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']}
               />
               <TextField
-                label="Units"
+                label="Units collected"
                 value={form.units}
                 onChange={(v) => setForm({ ...form, units: v })}
                 type="number"
@@ -121,11 +140,6 @@ export default function Donations({ donations, setDonations, donors }) {
                 required
               />
             </div>
-            <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800">
-              This demo records a donation entry but does not automatically add stock. A real
-              backend should validate collection, screening, component processing, and inventory
-              transactions.
-            </p>
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-secondary" onClick={() => setModal(false)}>
                 Cancel

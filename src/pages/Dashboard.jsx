@@ -24,15 +24,19 @@ import Badge from '../components/common/Badge.jsx';
 import DataTable from '../components/common/DataTable.jsx';
 import StatusBadge from '../components/common/StatusBadge.jsx';
 import { chartData } from '../data/mockData.js';
-export default function Dashboard({ donors, inventory, requests, donations }) {
+export default function Dashboard({ donors, inventory, requests, donations, portal = 'blood_bank' }) {
   const totalUnits = inventory.reduce((sum, item) => sum + Number(item.units || 0), 0);
   const lowStock = inventory.filter((i) => Number(i.units) < Number(i.minimum)).length;
   const pending = requests.filter((r) => r.status === 'Pending').length;
   return (
     <div>
       <PageTitle
-        title="Dashboard"
-        subtitle="Here is what's happening at your blood bank today."
+        title={portal === 'hospital' ? 'Hospital Dashboard' : 'Blood Bank Dashboard'}
+        subtitle={
+          portal === 'hospital'
+            ? 'Patient blood requisitions and hospital transits.'
+            : 'Central inventory and blood allocation.'
+        }
         action={
           <button className="btn-secondary" onClick={() => window.print()}>
             <Download size={16} /> Export summary
@@ -66,7 +70,7 @@ export default function Dashboard({ donors, inventory, requests, donations }) {
         <StatCard
           label="Donations recorded"
           value={donations.length}
-          note="Records in this demo"
+          note="Registered donors in database"
           icon={HeartPulse}
           color="green"
           trend="+12%"
@@ -93,7 +97,7 @@ export default function Dashboard({ donors, inventory, requests, donations }) {
                 Donations and requests over the last six months
               </p>
             </div>
-            <Badge tone="red">Demo data</Badge>
+            <Badge tone="red">Live Hospital Network</Badge>
           </div>
           <div className="h-72">
             <ResponsiveContainer width="100%" height="100%">

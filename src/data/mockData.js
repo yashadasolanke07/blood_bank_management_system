@@ -7,6 +7,7 @@ import {
   Building2,
   FileBarChart,
   Settings,
+  Stethoscope,
 } from 'lucide-react';
 
 // Sample data for the Blood Bank Management System demo.
@@ -214,6 +215,11 @@ export const navItems = [
     to: '/donations',
     label: 'Donations',
     icon: HandHeart,
+  },
+  {
+    to: '/screenings',
+    label: 'Lab Screenings',
+    icon: Stethoscope,
   },
   {
     to: '/hospitals',

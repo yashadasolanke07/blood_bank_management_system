@@ -10,7 +10,7 @@ export default function SettingsPage() {
     <div>
       <PageTitle
         title="Settings"
-        subtitle="Manage basic display preferences for this local demo."
+        subtitle="Manage system preferences and administrative configurations."
       />
       <div className="panel max-w-2xl p-6">
         <div className="mb-5 flex items-center gap-3">

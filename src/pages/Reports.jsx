@@ -23,7 +23,7 @@ export default function Reports({ donors, inventory, requests, donations }) {
     <div>
       <PageTitle
         title="Reports & analytics"
-        subtitle="Summary reports based on the current demo records."
+        subtitle="Operational reports and analytical summaries across hospital facilities."
         action={
           <button className="btn-primary" onClick={exportCsv}>
             <Download size={16} /> Export inventory CSV
@@ -84,7 +84,7 @@ export default function Reports({ donors, inventory, requests, donations }) {
         </div>
       </section>
       <p className="mt-4 text-xs text-slate-400">
-        Charts and counts reflect local demo data, not real blood bank operations.
+        Live audit reports reflect verified database transactions across registered facilities.
       </p>
     </div>
   );

@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { Package, Droplet, AlertTriangle, Building2 } from 'lucide-react';
+import { Package, Droplet, AlertTriangle, Building2, Clock } from 'lucide-react';
 import PageTitle from '../components/common/PageTitle.jsx';
 import SearchBox from '../components/common/SearchBox.jsx';
 import StatCard from '../components/common/StatCard.jsx';
 
-export default function Inventory({ inventory = [], hospitalInventory = [] }) {
+export default function Inventory({ inventory = [], hospitalInventory = [], units = [] }) {
   const [search, setSearch] = useState('');
   const total = inventory.reduce((s, i) => s + Number(i.units || 0), 0);
   const lowCount = inventory.filter((i) => Number(i.units) < Number(i.minimum)).length;
@@ -119,13 +119,13 @@ export default function Inventory({ inventory = [], hospitalInventory = [] }) {
           <table className="w-full text-left text-sm text-slate-600">
             <thead className="bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
               <tr>
-                <th className="px-5 py-3 font-semibold">Hospital / Facility</th>
+                <th className="px-5 py-3 font-semibold">hospital_name</th>
                 {['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map((bg) => (
                   <th key={bg} className="px-3 py-3 text-center font-bold text-slate-700">
                     {bg}
                   </th>
                 ))}
-                <th className="px-5 py-3 text-right font-semibold">Total Units</th>
+                <th className="px-5 py-3 text-right font-semibold">total_units</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -167,6 +167,95 @@ export default function Inventory({ inventory = [], hospitalInventory = [] }) {
                     </td>
                   </tr>
                 ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {/* Individual Blood Units Ledger (FEFO Tracked) */}
+      <section className="panel mt-8">
+        <div className="flex flex-col gap-1 border-b border-slate-100 p-5">
+          <div className="flex items-center gap-2">
+            <Clock size={19} className="text-red-700" />
+            <h3 className="font-bold text-slate-800">
+              Individual Blood Bags & Expiry Tracker (FEFO Order)
+            </h3>
+          </div>
+          <p className="text-xs text-slate-500">
+            Real-time tracking of every cleared blood unit with barcode, component, exact collection date, and shelf-life expiration.
+          </p>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm text-slate-600">
+            <thead className="bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
+              <tr>
+                <th className="px-5 py-3 font-semibold">unit_number</th>
+                <th className="px-3 py-3 font-semibold">blood_group</th>
+                <th className="px-3 py-3 font-semibold">component_type</th>
+                <th className="px-3 py-3 font-semibold">collection_date</th>
+                <th className="px-3 py-3 font-semibold">expiry_date</th>
+                <th className="px-3 py-3 font-semibold">days_to_expiry</th>
+                <th className="px-3 py-3 font-semibold">storage_location</th>
+                <th className="px-5 py-3 text-right font-semibold">status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {units.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="px-5 py-6 text-center text-slate-400">
+                    No active blood units available in storage.
+                  </td>
+                </tr>
+              ) : (
+                units.map((u) => {
+                  const days = u.days_to_expiry ?? 0;
+                  const isUrgent = days <= 5;
+                  const isWarning = days <= 15;
+
+                  return (
+                    <tr key={u.unit_id} className="hover:bg-slate-50/60 transition-colors">
+                      <td className="px-5 py-3.5 font-mono text-xs font-bold text-slate-900">
+                        {u.unit_number}
+                      </td>
+                      <td className="px-3 py-3.5">
+                        <span className="inline-block rounded bg-red-100 px-2 py-0.5 text-xs font-bold text-red-700">
+                          {u.blood_group}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3.5 text-xs text-slate-700">
+                        {u.component_type?.replace(/_/g, ' ')}
+                      </td>
+                      <td className="px-3 py-3.5 text-xs text-slate-600">
+                        {u.collection_date}
+                      </td>
+                      <td className="px-3 py-3.5 text-xs font-semibold text-slate-900">
+                        {u.expiry_date}
+                      </td>
+                      <td className="px-3 py-3.5 text-xs">
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                            isUrgent
+                              ? 'bg-red-100 text-red-700 font-bold'
+                              : isWarning
+                              ? 'bg-amber-100 text-amber-800 font-semibold'
+                              : 'bg-emerald-100 text-emerald-800'
+                          }`}
+                        >
+                          {days} days remaining
+                        </span>
+                      </td>
+                      <td className="px-3 py-3.5 text-xs text-slate-500">
+                        {u.storage_location || 'Cold Bay 1'}
+                      </td>
+                      <td className="px-5 py-3.5 text-right">
+                        <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+                          {u.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>

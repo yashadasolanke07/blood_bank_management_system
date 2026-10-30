@@ -33,14 +33,24 @@ async function patch(path, body) {
 }
 
 export const fetchInventory          = () => get('/inventory');
+export const fetchInventoryUnits     = () => get('/inventory/units');
 export const fetchHospitalInventory  = () => get('/inventory/by-hospital');
 export const fetchDonors             = () => get('/donors');
-export const fetchRequests        = () => get('/requests');
-export const fetchHospitals       = () => get('/hospitals');
-export const fetchDonations       = () => get('/donations');
+export const fetchRequests           = () => get('/requests');
+export const fetchAllocations        = () => get('/allocations');
+export const fetchHospitals          = () => get('/hospitals');
+export const fetchBloodBanks         = () => get('/blood-banks');
+export const fetchMedicalTests       = () => get('/medical-tests');
+export const fetchAppointments       = () => get('/appointments');
+export const fetchDonations          = () => get('/donations');
 export const createDonor          = (data) => post('/donors', data);
 export const createDonation       = (data) => post('/donations', data);
 export const createRequest        = (data) => post('/requests', data);
 export const createHospital       = (data) => post('/hospitals', data);
+export const createBloodBank      = (data) => post('/blood-banks', data);
+export const createAppointment   = (data) => post('/appointments', data);
+export const saveDonorCheckup    = (donorId, data) => post(`/donors/${donorId}/checkup`, data);
+export const updateAppointmentStatus = (id, status) => patch(`/appointments/${id}/status`, { status });
+export const updateRequestTransit = (id, transit_status) => patch(`/requests/${id}/transit`, { transit_status });
 export const fulfillRequest       = (id) => post(`/requests/${id}/fulfill`, {});
 export const updateRequestStatus  = (id, status) => patch(`/requests/${id}/status`, { status });

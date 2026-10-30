@@ -1,7 +1,14 @@
+"""
+HemoCare Blood Bank Management System (BBMS) - Schema-Aligned Backend API Server
+Target: MySQL 8.0+ / Flask REST API
+All returned JSON keys strictly match the 9 schema tables.
+"""
+
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import mysql.connector
 from config import DB_CONFIG
+import time
 
 app = Flask(__name__)
 CORS(app)
@@ -9,21 +16,20 @@ CORS(app)
 def get_db():
     return mysql.connector.connect(**DB_CONFIG)
 
-ALL_BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']
-
-# Standard Red Blood Cell compatibility matrix (Recipient -> prioritized allowed donor groups)
 BLOOD_COMPATIBILITY = {
-    'AB+': ['AB+', 'AB-', 'A+', 'A-', 'B+', 'B-', 'O+', 'O-'],
-    'AB-': ['AB-', 'A-', 'B-', 'O-'],
+    'O+':  ['O+', 'O-'],
+    'O-':  ['O-'],
     'A+':  ['A+', 'A-', 'O+', 'O-'],
     'A-':  ['A-', 'O-'],
     'B+':  ['B+', 'B-', 'O+', 'O-'],
     'B-':  ['B-', 'O-'],
-    'O+':  ['O+', 'O-'],
-    'O-':  ['O-'],
+    'AB+': ['AB+', 'AB-', 'A+', 'A-', 'B+', 'B-', 'O+', 'O-'],
+    'AB-': ['AB-', 'A-', 'B-', 'O-']
 }
 
-# 1. INVENTORY (Live stock from blood_units)
+# ============================================================================
+# 1. INVENTORY (blood_units, v_available_blood_inventory)
+# ============================================================================
 @app.route('/api/inventory', methods=['GET'])
 def get_inventory():
     conn = get_db()
@@ -31,35 +37,23 @@ def get_inventory():
     try:
         cur.execute("""
             SELECT 
-                bu.blood_group AS blood,
-                COUNT(bu.unit_id) AS units,
-                DATE_FORMAT(MIN(bu.expiry_date), '%Y-%m-%d') AS expiry
-            FROM blood_units bu
-            WHERE bu.status = 'AVAILABLE'
-              AND bu.test_status = 'NEGATIVE_CLEARED'
-              AND bu.expiry_date >= CURRENT_DATE
-            GROUP BY bu.blood_group
+                bg.blood_group,
+                bg.blood_group AS blood,
+                COALESCE(inv.units_available, 0) AS units,
+                COALESCE(inv.units_available, 0) AS units_available,
+                COALESCE(DATE_FORMAT(inv.earliest_expiry, '%Y-%m-%d'), 'N/A') AS expiry,
+                COALESCE(DATE_FORMAT(inv.earliest_expiry, '%Y-%m-%d'), 'N/A') AS earliest_expiry,
+                10 AS minimum
+            FROM (
+                SELECT 'A+' AS blood_group UNION ALL SELECT 'A-' UNION ALL
+                SELECT 'B+' UNION ALL SELECT 'B-' UNION ALL
+                SELECT 'AB+' UNION ALL SELECT 'AB-' UNION ALL
+                SELECT 'O+' UNION ALL SELECT 'O-'
+            ) bg
+            LEFT JOIN v_available_blood_inventory inv ON bg.blood_group = inv.blood_group
+            ORDER BY bg.blood_group ASC
         """)
-        db_rows = {row['blood']: row for row in cur.fetchall()}
-
-        result = []
-        for bg in ALL_BLOOD_GROUPS:
-            if bg in db_rows:
-                result.append({
-                    'blood': bg,
-                    'units': int(db_rows[bg]['units']),
-                    'minimum': 10,
-                    'expiry': db_rows[bg]['expiry'] or '2026-11-30'
-                })
-            else:
-                result.append({
-                    'blood': bg,
-                    'units': 0,
-                    'minimum': 10,
-                    'expiry': 'Out of Stock'
-                })
-
-        return jsonify(result)
+        return jsonify(cur.fetchall())
     finally:
         cur.close()
         conn.close()
@@ -73,77 +67,172 @@ def get_inventory_by_hospital():
             SELECT 
                 hospital_id,
                 hospital_name,
+                hospital_name AS name,
                 `A+`, `A-`, `B+`, `B-`, `AB+`, `AB-`, `O+`, `O-`,
                 total_units
             FROM v_hospital_blood_inventory
-            ORDER BY hospital_name
+            ORDER BY hospital_id ASC
         """)
         return jsonify(cur.fetchall())
     finally:
         cur.close()
         conn.close()
 
-# 2. DONORS
+@app.route('/api/inventory/units', methods=['GET'])
+def get_inventory_units():
+    conn = get_db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT 
+                unit_id,
+                CONCAT('UNT-', unit_id) AS id,
+                unit_number,
+                blood_group,
+                component_type,
+                volume_ml,
+                DATE_FORMAT(collection_date, '%Y-%m-%d') AS collection_date,
+                DATE_FORMAT(expiry_date, '%Y-%m-%d') AS expiry_date,
+                DATEDIFF(expiry_date, CURRENT_DATE) AS days_to_expiry,
+                test_status,
+                storage_location,
+                status
+            FROM blood_units
+            WHERE status = 'AVAILABLE' AND expiry_date >= CURRENT_DATE
+            ORDER BY expiry_date ASC
+        """)
+        return jsonify(cur.fetchall())
+    finally:
+        cur.close()
+        conn.close()
+
+# ============================================================================
+# 2. DONORS & CLINICAL CHECKUPS (donors, clinical_checkups)
+# ============================================================================
 @app.route('/api/donors', methods=['GET'])
 def get_donors():
     conn = get_db()
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
-            SELECT
-                CONCAT('D-', donor_id) AS id,
-                donor_full_name AS name,
-                blood_group AS blood,
-                donor_age AS age,
-                phone,
-                'Pune' AS city,
-                DATE_FORMAT(last_donation_date, '%Y-%m-%d') AS lastDonation,
-                IF(donor_status IN ('ACTIVE','ELIGIBLE'), 'Active', 'Inactive') AS status
-            FROM v_donor_health_authorized
-            ORDER BY donor_id DESC
+            SELECT 
+                CONCAT('D-', d.donor_id) AS id,
+                d.donor_id,
+                d.full_name,
+                d.full_name AS name,
+                d.blood_group,
+                d.blood_group AS blood,
+                d.age,
+                d.gender,
+                d.phone,
+                d.city,
+                d.address,
+                d.weight_kg,
+                d.weight_kg AS weight,
+                d.height_cm,
+                d.height_cm AS height,
+                d.has_addiction,
+                COALESCE(d.addiction_details, 'None') AS addiction_details,
+                COALESCE(d.medications, 'None') AS medications,
+                COALESCE(d.previous_illness, 'None') AS previous_illness,
+                COALESCE(d.recent_surgery, 'None') AS recent_surgery,
+                DATE_FORMAT(d.last_donation_date, '%Y-%m-%d') AS last_donation_date,
+                DATE_FORMAT(d.last_donation_date, '%Y-%m-%d') AS lastDonation,
+                d.status AS donor_status,
+                (SELECT c.appointment_status FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS appointment_status,
+                (SELECT c.appointment_status FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS appt_status,
+                (SELECT c.checkup_id FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS checkup_id,
+                (SELECT DATE_FORMAT(c.checkup_date, '%Y-%m-%d') FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS checkup_date,
+                (SELECT DATE_FORMAT(c.checkup_date, '%Y-%m-%d') FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS appt_date,
+                (SELECT DATE_FORMAT(c.time_slot, '%H:%i') FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS time_slot,
+                (SELECT DATE_FORMAT(c.time_slot, '%H:%i') FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS appt_timeslot,
+                (SELECT c.decision FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS decision,
+                (SELECT c.remarks FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS remarks,
+                (SELECT c.remarks FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS test_remarks,
+                (SELECT CAST(c.hemoglobin_level AS CHAR) FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS hemoglobin_level,
+                (SELECT CAST(c.hemoglobin_level AS CHAR) FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS hemoglobin,
+                (SELECT c.bp_systolic FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS bp_systolic,
+                (SELECT c.bp_diastolic FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS bp_diastolic,
+                (SELECT CAST(c.temperature_celsius AS CHAR) FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS temperature_celsius,
+                (SELECT CAST(c.temperature_celsius AS CHAR) FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS temperature,
+                (SELECT c.pulse_rate FROM clinical_checkups c WHERE c.donor_id = d.donor_id ORDER BY c.checkup_id DESC LIMIT 1) AS pulse_rate
+            FROM donors d
+            ORDER BY d.donor_id DESC
         """)
-        return jsonify(cur.fetchall())
+        rows = cur.fetchall()
+        for r in rows:
+            decision = r.get('decision')
+            if decision == 'ACCEPTED':
+                r['clinical_status'] = 'ACCEPTED'
+            elif decision == 'REJECTED':
+                r['clinical_status'] = 'REJECTED'
+            else:
+                r['clinical_status'] = 'PENDING_CHECKUP'
+            r['status'] = r['clinical_status']
+        return jsonify(rows)
     finally:
         cur.close()
         conn.close()
 
 @app.route('/api/donors', methods=['POST'])
 def add_donor():
-    data = request.get_json()
+    data = request.get_json() or {}
     conn = get_db()
     cur = conn.cursor()
     try:
-        parts = data['name'].strip().split(' ', 1)
-        first = parts[0]
-        last = parts[1] if len(parts) > 1 else 'Donor'
+        full_name = data.get('full_name') or data.get('name', '').strip() or 'Walk-in Donor'
+        blood_group = data.get('blood_group') or data.get('blood', 'O+').strip()
+        age = int(data.get('age', 25))
+        gender = str(data.get('gender', 'MALE')).upper()
+        if gender not in ['MALE', 'FEMALE', 'OTHER']:
+            gender = 'MALE'
+        phone = data.get('phone', '').strip() or f"99{int(time.time()) % 100000000}"
+        city = data.get('city', 'Pune').strip()
+        address = data.get('address', '').strip() or f"{city}, Maharashtra"
+        weight = float(data.get('weight_kg') or data.get('weight', 65.0))
+        height = float(data.get('height_cm') or data.get('height', 170.0))
+        has_addiction = 1 if str(data.get('has_addiction', '')).lower() in ['1', 'true', 'yes'] else 0
+        addiction_details = data.get('addiction_details') or 'None'
+        medications = data.get('medications') or 'None'
+        previous_illness = data.get('previous_illness') or 'None'
+        recent_surgery = data.get('recent_surgery') or 'None'
 
         cur.execute("""
-            INSERT INTO users
-                (first_name, last_name, email, password_hash,
-                 phone, gender, date_of_birth, address, role)
-            VALUES (%s, %s, %s,
-                '$2a$12$dummyhashforcollegedemo',
-                %s, 'OTHER',
-                DATE_SUB(CURRENT_DATE, INTERVAL %s YEAR),
-                %s, 'DONOR')
-        """, (first, last,
-              f"donor_{data['phone']}@bbms.org",
-              data['phone'],
-              int(data.get('age', 25)),
-              data.get('city', 'Pune')))
-        user_id = cur.lastrowid
-
-        cur.execute("INSERT INTO donors (user_id, status) VALUES (%s, 'ACTIVE')", (user_id,))
+            INSERT INTO donors 
+                (full_name, blood_group, age, gender, phone, city, address,
+                 weight_kg, height_cm, has_addiction, addiction_details,
+                 medications, previous_illness, recent_surgery)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (full_name, blood_group, age, gender, phone, city, address,
+              weight, height, has_addiction, addiction_details,
+              medications, previous_illness, recent_surgery))
         donor_id = cur.lastrowid
 
-        cur.execute("""
-            INSERT INTO donor_health
-                (donor_id, blood_group, height_cm, weight_kg, last_donation_date)
-            VALUES (%s, %s, 170.0, 65.0, %s)
-        """, (donor_id, data['blood'], data.get('lastDonation') or None))
+        # Initial checkup handling
+        checkup_decision = str(data.get('checkup_decision') or data.get('decision', '')).upper()
+        if checkup_decision in ('ACCEPTED', 'REJECTED'):
+            hb = float(data.get('hemoglobin_level') or data.get('hemoglobin', 14.0))
+            bp_sys = int(data.get('bp_systolic', 120))
+            bp_dia = int(data.get('bp_diastolic', 80))
+            temp = float(data.get('temperature_celsius') or data.get('temperature', 36.6))
+            pulse = int(data.get('pulse_rate', 72))
+            remarks = data.get('remarks') or data.get('checkup_remarks') or ('Passed hospital clinical checkup' if checkup_decision == 'ACCEPTED' else 'Rejected due to health issues')
+            cur.execute("""
+                INSERT INTO clinical_checkups
+                    (donor_id, hospital_id, checkup_date, time_slot, hemoglobin_level,
+                     bp_systolic, bp_diastolic, temperature_celsius, pulse_rate,
+                     appointment_status, decision, remarks)
+                VALUES (%s, 1, CURRENT_DATE, '09:30:00', %s, %s, %s, %s, %s, 'COMPLETED', %s, %s)
+            """, (donor_id, hb, bp_sys, bp_dia, temp, pulse, checkup_decision, remarks))
+        else:
+            cur.execute("""
+                INSERT INTO clinical_checkups
+                    (donor_id, hospital_id, checkup_date, time_slot, appointment_status, decision, remarks)
+                VALUES (%s, 1, CURRENT_DATE, '09:30:00', 'SCHEDULED', 'PENDING', 'Awaiting clinical examination')
+            """, (donor_id,))
 
         conn.commit()
-        return jsonify({'success': True, 'id': f'D-{donor_id}'}), 201
+        return jsonify({'success': True, 'id': f'D-{donor_id}', 'donor_id': donor_id}), 201
     except Exception as exc:
         conn.rollback()
         return jsonify({'error': str(exc)}), 400
@@ -151,33 +240,70 @@ def add_donor():
         cur.close()
         conn.close()
 
-# 3. REQUESTS
+@app.route('/api/donors/<int:donor_id>/checkup', methods=['POST'])
+def save_donor_checkup(donor_id):
+    data = request.get_json() or {}
+    conn = get_db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        decision = str(data.get('decision', 'ACCEPTED')).upper()
+        remarks = data.get('remarks', '').strip() or ('Passed clinical examination' if decision == 'ACCEPTED' else 'Clinical deferral due to health issues')
+        hemoglobin = float(data.get('hemoglobin_level') or data.get('hemoglobin', 14.0))
+        bp_systolic = int(data.get('bp_systolic', 120))
+        bp_diastolic = int(data.get('bp_diastolic', 80))
+        temperature = float(data.get('temperature_celsius') or data.get('temperature', 36.6))
+        pulse = int(data.get('pulse_rate', 72))
+        hospital_id = int(data.get('hospital_id', 1))
+
+        cur.execute("""
+            INSERT INTO clinical_checkups
+                (donor_id, hospital_id, checkup_date, time_slot, hemoglobin_level,
+                 bp_systolic, bp_diastolic, temperature_celsius, pulse_rate,
+                 appointment_status, decision, remarks)
+            VALUES (%s, %s, CURRENT_DATE, '09:30:00', %s, %s, %s, %s, %s, 'COMPLETED', %s, %s)
+        """, (donor_id, hospital_id, hemoglobin, bp_systolic, bp_diastolic, temperature, pulse, decision, remarks))
+
+        conn.commit()
+        return jsonify({'success': True, 'decision': decision, 'remarks': remarks}), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close()
+        conn.close()
+
+# ============================================================================
+# 3. BLOOD REQUISITIONS & ALLOCATIONS (blood_requests, allocations)
+# ============================================================================
 @app.route('/api/requests', methods=['GET'])
 def get_requests():
     conn = get_db()
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
-            SELECT
+            SELECT 
                 CONCAT('REQ-', r.request_id) AS id,
+                r.request_id,
+                r.patient_name,
                 r.patient_name AS patient,
+                r.patient_mrn,
+                h.name AS hospital_name,
                 h.name AS hospital,
+                r.hospital_id,
+                r.blood_group,
                 r.blood_group AS blood,
+                r.component_type,
+                r.quantity_requested,
                 r.quantity_requested AS units,
-                DATE_FORMAT(r.required_by_date, '%Y-%m-%d') AS date,
-                CASE r.urgency
-                    WHEN 'EMERGENCY' THEN 'Emergency'
-                    WHEN 'URGENT' THEN 'Urgent'
-                    ELSE 'Normal'
-                END AS priority,
-                CASE r.status
-                    WHEN 'FULFILLED' THEN 'Fulfilled'
-                    WHEN 'APPROVED' THEN 'Approved'
-                    WHEN 'PARTIALLY_ALLOCATED' THEN 'Approved'
-                    WHEN 'CANCELLED' THEN 'Rejected'
-                    WHEN 'REJECTED' THEN 'Rejected'
-                    ELSE 'Pending'
-                END AS status
+                DATE_FORMAT(r.request_date, '%Y-%m-%d') AS request_date,
+                DATE_FORMAT(r.request_date, '%Y-%m-%d') AS date,
+                DATE_FORMAT(r.required_date, '%Y-%m-%d') AS required_date,
+                r.priority,
+                r.status,
+                CASE WHEN r.status = 'Fulfilled' THEN r.source_facility_name ELSE NULL END AS source_facility_name,
+                CASE WHEN r.status = 'Fulfilled' THEN r.source_facility_name ELSE NULL END AS source_facility,
+                r.transit_status,
+                r.notes
             FROM blood_requests r
             JOIN hospitals h ON r.hospital_id = h.hospital_id
             ORDER BY r.request_id DESC
@@ -189,54 +315,38 @@ def get_requests():
 
 @app.route('/api/requests', methods=['POST'])
 def add_request():
-    data = request.get_json()
+    data = request.get_json() or {}
     conn = get_db()
     cur = conn.cursor(dictionary=True)
     try:
-        urgency = 'URGENT' if data.get('priority') == 'Urgent' else 'NORMAL'
-        
-        hospital_name = data.get('hospital', '').strip()
-        cur.execute("SELECT hospital_id FROM hospitals WHERE name LIKE %s LIMIT 1", (f"%{hospital_name}%",))
+        hosp_name = data.get('hospital_name') or data.get('hospital', 'City General Hospital').strip()
+        cur.execute("SELECT hospital_id FROM hospitals WHERE name LIKE %s LIMIT 1", (f"%{hosp_name}%",))
         h_row = cur.fetchone()
         hospital_id = h_row['hospital_id'] if h_row else 1
 
+        patient_name = data.get('patient_name') or data.get('patient', 'Emergency Patient').strip()
+        patient_mrn = data.get('patient_mrn') or f"MRN-{int(time.time()) % 100000}"
+        blood_group = data.get('blood_group') or data.get('blood', 'O+').strip()
+        component = data.get('component_type', 'PACKED_RED_CELLS').strip()
+        units = int(data.get('quantity_requested') or data.get('units', 1))
+        priority = data.get('priority', 'Normal')
+        notes = data.get('notes', 'Clinical requisition')
+
         cur.execute("""
             INSERT INTO blood_requests
-                (requester_id, blood_bank_id, hospital_id, patient_name,
-                 blood_group, component_type, quantity_requested, urgency,
-                 request_date, required_by_date, status)
-            VALUES (1, 1, %s, %s, %s, 'PACKED_RED_CELLS', %s, %s,
-                    CURRENT_TIMESTAMP, DATE_ADD(CURRENT_DATE, INTERVAL 3 DAY), 'PENDING')
-        """, (hospital_id, data['patient'], data['blood'], int(data.get('units', 1)), urgency))
+                (hospital_id, patient_name, patient_mrn, blood_group,
+                 component_type, quantity_requested, priority, request_date, required_date,
+                 notes, status, source_facility_name, transit_status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_DATE, DATE_ADD(CURRENT_DATE, INTERVAL 2 DAY),
+                    %s, 'Pending', NULL, NULL)
+        """, (hospital_id, patient_name, patient_mrn, blood_group, component, units, priority, notes))
+        req_id = cur.lastrowid
 
-        request_id = cur.lastrowid
         conn.commit()
-        return jsonify({'success': True, 'id': f'REQ-{request_id}'}), 201
-    except Exception as e:
+        return jsonify({'success': True, 'id': f'REQ-{req_id}', 'request_id': req_id}), 201
+    except Exception as exc:
         conn.rollback()
-        return jsonify({'error': str(e)}), 400
-    finally:
-        cur.close()
-        conn.close()
-
-@app.route('/api/requests/<int:req_id>/status', methods=['PATCH'])
-def update_request_status(req_id):
-    data = request.get_json()
-    new_status = data.get('status', '').upper()
-    if new_status == 'APPROVED': db_status = 'APPROVED'
-    elif new_status == 'REJECTED': db_status = 'REJECTED'
-    elif new_status == 'PENDING': db_status = 'PENDING'
-    else: return jsonify({'error': 'Invalid status'}), 400
-
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        cur.execute("UPDATE blood_requests SET status = %s WHERE request_id = %s", (db_status, req_id))
-        conn.commit()
-        return jsonify({'success': True})
-    except Exception as e:
-        conn.rollback()
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': str(exc)}), 400
     finally:
         cur.close()
         conn.close()
@@ -246,56 +356,69 @@ def fulfill_request(req_id):
     conn = get_db()
     cur = conn.cursor(dictionary=True)
     try:
-        cur.execute("SELECT blood_group, component_type, blood_bank_id, quantity_requested, status FROM blood_requests WHERE request_id = %s", (req_id,))
+        cur.execute("""
+            SELECT r.blood_group, r.component_type, r.hospital_id, h.name AS hospital_name, r.status
+            FROM blood_requests r
+            JOIN hospitals h ON r.hospital_id = h.hospital_id
+            WHERE r.request_id = %s
+        """, (req_id,))
         req_row = cur.fetchone()
         if not req_row:
-            return jsonify({'error': 'Request not found'}), 404
+            return jsonify({'error': 'Requisition not found'}), 404
 
         patient_bg = req_row['blood_group']
         req_component = req_row['component_type'] or 'PACKED_RED_CELLS'
-        req_bank_id = req_row['blood_bank_id'] or 1
+        dest_hospital = req_row['hospital_name']
         compatible_groups = BLOOD_COMPATIBILITY.get(patient_bg, [patient_bg])
 
         placeholders = ', '.join(['%s'] * len(compatible_groups))
         field_order = ', '.join(['%s'] * len(compatible_groups))
 
-        # Prefer exact match first, then compatible donor groups, matching component type and servicing blood bank, nearest expiring unit (FEFO)
         query = f"""
-            SELECT unit_id, blood_group, component_type FROM blood_units
-            WHERE blood_group IN ({placeholders})
-              AND component_type = %s
-              AND blood_bank_id = %s
-              AND status = 'AVAILABLE'
-              AND test_status = 'NEGATIVE_CLEARED'
-              AND expiry_date >= CURRENT_DATE
-            ORDER BY FIELD(blood_group, {field_order}), expiry_date ASC
+            SELECT bu.unit_id, bu.unit_number, bu.blood_group, bu.component_type
+            FROM blood_units bu
+            WHERE bu.blood_group IN ({placeholders})
+              AND bu.component_type = %s
+              AND bu.status = 'AVAILABLE'
+              AND bu.test_status = 'NEGATIVE_CLEARED'
+              AND bu.expiry_date >= CURRENT_DATE
+            ORDER BY FIELD(bu.blood_group, {field_order}), bu.expiry_date ASC
             LIMIT 1
         """
-        params = list(compatible_groups) + [req_component, req_bank_id] + list(compatible_groups)
+        params = list(compatible_groups) + [req_component] + list(compatible_groups)
         cur.execute(query, tuple(params))
         unit = cur.fetchone()
 
         if not unit:
-            return jsonify({'error': f"No available or compatible {req_component} units in stock for {patient_bg}"}), 400
+            return jsonify({'error': f"No compatible {req_component} available in Central Blood Bank for {patient_bg}"}), 400
+
+        source_name = 'Central Blood Bank'
 
         cur.execute("""
-            INSERT INTO allocations (request_id, unit_id, allocated_by, allocation_status)
-            VALUES (%s, %s, 4, 'RESERVED')
-        """, (req_id, unit['unit_id']))
+            INSERT INTO allocations 
+                (request_id, unit_id, allocated_by, source_facility, destination_hospital, dispatch_date, allocation_status, notes)
+            VALUES (%s, %s, 1, %s, %s, CURRENT_TIMESTAMP, 'DISPATCHED', %s)
+        """, (req_id, unit['unit_id'], source_name, dest_hospital, f"Allotted from {source_name} to {dest_hospital}"))
 
-        cur.execute("UPDATE blood_requests SET status = 'FULFILLED' WHERE request_id = %s", (req_id,))
+        cur.execute("""
+            UPDATE blood_requests 
+            SET status = 'Fulfilled',
+                source_facility_name = %s,
+                transit_status = 'IN_TRANSIT'
+            WHERE request_id = %s
+        """, (source_name, req_id))
 
         conn.commit()
 
-        is_exact = (unit['blood_group'] == patient_bg)
-        msg = f"Allocated exact match ({unit['blood_group']}) unit #{unit['unit_id']}." if is_exact else f"Allocated compatible donor ({unit['blood_group']}) unit #{unit['unit_id']} for {patient_bg} patient."
-
+        msg = f"Allotted {unit['blood_group']} bag ({unit['unit_number']}) from {source_name} to {dest_hospital}."
         return jsonify({
             'success': True,
             'allocated_unit_id': unit['unit_id'],
-            'allocated_blood_group': unit['blood_group'],
+            'unit_number': unit['unit_number'],
+            'source_facility_name': source_name,
+            'destination_hospital': dest_hospital,
             'message': msg
-        })
+        }), 200
     except Exception as e:
         conn.rollback()
         return jsonify({'error': str(e)}), 400
@@ -303,23 +426,34 @@ def fulfill_request(req_id):
         cur.close()
         conn.close()
 
-# 4. DONATIONS (GET & POST)
+# ============================================================================
+# 4. BLOOD COLLECTIONS (donations, blood_units)
+# ============================================================================
 @app.route('/api/donations', methods=['GET'])
 def get_donations():
     conn = get_db()
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
-            SELECT
+            SELECT 
                 CONCAT('DON-', d.donation_id) AS id,
-                CONCAT(u.first_name, ' ', u.last_name) AS donor,
+                d.donation_id,
+                d.donor_id,
+                dn.full_name,
+                dn.full_name AS donor,
+                d.blood_group,
                 d.blood_group AS blood,
-                1 AS units,
+                d.units_collected,
+                d.units_collected AS units,
+                d.total_volume_ml,
+                DATE_FORMAT(d.donation_date, '%Y-%m-%d') AS donation_date,
                 DATE_FORMAT(d.donation_date, '%Y-%m-%d') AS date,
-                h.name AS location
+                h.hospital_id,
+                h.name AS hospital_name,
+                h.name AS location,
+                d.screening_status
             FROM donations d
             JOIN donors dn ON d.donor_id = dn.donor_id
-            JOIN users u ON dn.user_id = u.user_id
             JOIN hospitals h ON d.hospital_id = h.hospital_id
             ORDER BY d.donation_id DESC
         """)
@@ -330,90 +464,71 @@ def get_donations():
 
 @app.route('/api/donations', methods=['POST'])
 def add_donation():
-    data = request.get_json()
+    data = request.get_json() or {}
     conn = get_db()
     cur = conn.cursor(dictionary=True)
     try:
-        donor_name = data.get('donor', '').strip()
-        blood_group = data.get('blood', 'O+').strip()
-        units_to_add = int(data.get('units', 1))
+        donor_id_param = data.get('donor_id')
+        donor_name = str(data.get('full_name') or data.get('donor', '')).strip()
 
-        # 1. Match donor
+        donor = None
+        if donor_id_param:
+            cur.execute("SELECT donor_id, full_name, blood_group FROM donors WHERE donor_id = %s", (int(donor_id_param),))
+            donor = cur.fetchone()
+        if not donor and donor_name:
+            cur.execute("SELECT donor_id, full_name, blood_group FROM donors WHERE full_name LIKE %s LIMIT 1", (f"%{donor_name}%",))
+            donor = cur.fetchone()
+
+        if not donor:
+            return jsonify({'error': 'Donor not found.'}), 404
+
+        donor_id = donor['donor_id']
+        blood_group = donor['blood_group']
+
+        # Clinical Safety Check: ensure donor was NOT rejected in checkup
         cur.execute("""
-            SELECT d.donor_id, d.user_id
-            FROM donors d
-            JOIN users u ON d.user_id = u.user_id
-            WHERE CONCAT(u.first_name, ' ', u.last_name) LIKE %s
-            LIMIT 1
-        """, (f"%{donor_name}%",))
-        donor_row = cur.fetchone()
-        
-        if donor_row:
-            donor_id = donor_row['donor_id']
-        else:
-            cur.execute("SELECT donor_id FROM donors ORDER BY donor_id DESC LIMIT 1")
-            fallback = cur.fetchone()
-            donor_id = fallback['donor_id'] if fallback else 1
+            SELECT decision, remarks 
+            FROM clinical_checkups 
+            WHERE donor_id = %s 
+            ORDER BY checkup_id DESC LIMIT 1
+        """, (donor_id,))
+        chk = cur.fetchone()
+        if chk and chk.get('decision') == 'REJECTED':
+            reason = chk.get('remarks') or 'Clinical health issues / deferral'
+            return jsonify({'error': f"Blood collection prohibited: Donor is REJECTED ({reason})."}), 400
 
-        # 2. Match hospital
-        loc_name = data.get('location', '').strip()
-        cur.execute("SELECT hospital_id FROM hospitals WHERE name LIKE %s LIMIT 1", (f"%{loc_name}%",))
-        h_row = cur.fetchone()
-        hospital_id = h_row['hospital_id'] if h_row else 1
+        loc_name = str(data.get('hospital_name') or data.get('location', '')).strip()
+        hospital_id = 1
+        if loc_name:
+            cur.execute("SELECT hospital_id FROM hospitals WHERE name LIKE %s LIMIT 1", (f"%{loc_name}%",))
+            h_row = cur.fetchone()
+            if h_row:
+                hospital_id = h_row['hospital_id']
 
-        # 3. Create pre-screening appointment
+        units_collected = int(data.get('units_collected') or data.get('units', 1))
+
         cur.execute("""
-            INSERT INTO appointments
-                (donor_id, hospital_id, appointment_date, timeslot, appointment_status)
-            VALUES (%s, %s, CURRENT_DATE, '09:00:00', 'COMPLETED')
-        """, (donor_id, hospital_id))
-        pre_appt_id = cur.lastrowid
-
-        # 4. Create medical test cleared entry
-        cur.execute("""
-            INSERT INTO medical_tests
-                (appointment_id, donor_id, recorded_by, test_date, hemoglobin_level,
-                 blood_pressure_systolic, blood_pressure_diastolic, pulse_rate,
-                 temperature_celsius, result, eligibility)
-            VALUES (%s, %s, 8, CURRENT_TIMESTAMP, 14.5, 120, 80, 72, 36.6, 'PASSED', 'ELIGIBLE')
-        """, (pre_appt_id, donor_id))
-        med_test_id = cur.lastrowid
-
-        # 5. Create donation appointment using unique test_id
-        cur.execute("""
-            INSERT INTO donation_appointments
-                (medical_test_id, donor_id, hospital_id, appointment_date, time_slot, status)
-            VALUES (%s, %s, %s, CURRENT_DATE, '10:00:00', 'COMPLETED')
-        """, (med_test_id, donor_id, hospital_id))
-        don_appt_id = cur.lastrowid
-
-        # 6. Insert donation session
-        cur.execute("""
-            INSERT INTO donations
-                (donation_appt_id, donor_id, hospital_id, blood_group, donation_type,
-                 donation_date, quality, screening_status, total_volume_ml)
-            VALUES (%s, %s, %s, %s, 'WHOLE_BLOOD', CURRENT_TIMESTAMP, 'GOOD', 'CLEARED', %s)
-        """, (don_appt_id, donor_id, hospital_id, blood_group, units_to_add * 450.0))
+            INSERT INTO donations 
+                (donor_id, hospital_id, blood_group, units_collected, total_volume_ml, donation_date, screening_status)
+            VALUES (%s, %s, %s, %s, %s, CURRENT_DATE, 'CLEARED')
+        """, (donor_id, hospital_id, blood_group, units_collected, units_collected * 450.0))
         donation_id = cur.lastrowid
 
-        # 7. Add blood units with unique barcodes
-        import time
         ts = int(time.time())
-        for i in range(units_to_add):
+        for i in range(units_collected):
             unit_code = f"BBMS-{donation_id}-{i+1}-{ts}"
             cur.execute("""
-                INSERT INTO blood_units
-                    (donation_id, blood_bank_id, unit_number, blood_group, component_type,
+                INSERT INTO blood_units 
+                    (donation_id, unit_number, blood_group, component_type,
                      volume_ml, collection_date, expiry_date, test_status, status, storage_location)
-                VALUES (%s, 1, %s, %s, 'PACKED_RED_CELLS', 250.0, CURRENT_DATE, DATE_ADD(CURRENT_DATE, INTERVAL 35 DAY),
-                        'NEGATIVE_CLEARED', 'AVAILABLE', 'Cold Storage Bay 1')
+                VALUES (%s, %s, %s, 'PACKED_RED_CELLS', 250.00,
+                        CURRENT_DATE, DATE_ADD(CURRENT_DATE, INTERVAL 35 DAY), 'NEGATIVE_CLEARED', 'AVAILABLE', 'Cold Storage Bay 1')
             """, (donation_id, unit_code, blood_group))
 
-        # 8. Update donor last donation date
-        cur.execute("UPDATE donor_health SET last_donation_date = CURRENT_DATE WHERE donor_id = %s", (donor_id,))
+        cur.execute("UPDATE donors SET last_donation_date = CURRENT_DATE WHERE donor_id = %s", (donor_id,))
 
         conn.commit()
-        return jsonify({'success': True, 'id': f'DON-{donation_id}'}), 201
+        return jsonify({'success': True, 'id': f'DON-{donation_id}', 'donation_id': donation_id}), 201
     except Exception as e:
         conn.rollback()
         return jsonify({'error': str(e)}), 400
@@ -421,22 +536,27 @@ def add_donation():
         cur.close()
         conn.close()
 
-# 5. HOSPITALS
+# ============================================================================
+# 5. HOSPITALS & CENTRAL BLOOD BANK (hospitals, central_blood_bank)
+# ============================================================================
 @app.route('/api/hospitals', methods=['GET'])
 def get_hospitals():
     conn = get_db()
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
-            SELECT
+            SELECT 
+                hospital_id,
                 CONCAT('H-', hospital_id) AS id,
                 name,
-                'Dr. In-Charge' AS contact,
+                license_number,
                 phone,
-                address AS city,
-                'Verified' AS status
+                email,
+                city,
+                address,
+                status
             FROM hospitals
-            ORDER BY hospital_id
+            ORDER BY hospital_id ASC
         """)
         return jsonify(cur.fetchall())
     finally:
@@ -445,25 +565,24 @@ def get_hospitals():
 
 @app.route('/api/hospitals', methods=['POST'])
 def add_hospital():
-    import time
-    data = request.get_json()
+    data = request.get_json() or {}
     conn = get_db()
-    cur = conn.cursor(dictionary=True)
+    cur = conn.cursor()
     try:
         name = data.get('name', '').strip()
-        phone = data.get('phone', '9876543210').strip()
+        license_num = data.get('license_number', '').strip() or f"HOSP-LIC-{int(time.time()) % 100000}"
+        phone = data.get('phone', '').strip()
+        email = data.get('email', '').strip()
         city = data.get('city', 'Pune').strip()
-        ts = int(time.time())
-        license_num = f"LIC-{ts}"
-        email = f"contact_{ts}@hospital.org"
+        address = data.get('address', '').strip() or f"{city}, Maharashtra"
 
         cur.execute("""
-            INSERT INTO hospitals (name, license_number, phone, email, address)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (name, license_num, phone, email, city))
+            INSERT INTO hospitals (name, license_number, phone, email, city, address, status)
+            VALUES (%s, %s, %s, %s, %s, %s, 'Verified')
+        """, (name, license_num, phone, email, city, address))
         h_id = cur.lastrowid
         conn.commit()
-        return jsonify({'success': True, 'id': f"H-{h_id}"}), 201
+        return jsonify({'success': True, 'id': f'H-{h_id}', 'hospital_id': h_id}), 201
     except Exception as e:
         conn.rollback()
         return jsonify({'error': str(e)}), 400
@@ -471,5 +590,133 @@ def add_hospital():
         cur.close()
         conn.close()
 
+@app.route('/api/blood-banks', methods=['GET'])
+def get_blood_banks():
+    conn = get_db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT COUNT(*) AS stored_units FROM blood_units WHERE status = 'AVAILABLE'")
+        cnt = cur.fetchone()['stored_units']
+        return jsonify([{
+            'bank_id': 1,
+            'id': 'BB-1',
+            'name': 'Central Blood Bank',
+            'license_number': 'BB-LIC-PUNE-01',
+            'phone': '+91-20-2612-3456',
+            'email': 'central@bloodbank.org',
+            'address': 'Central Blood Bank Hub, Pune',
+            'stored_units': cnt,
+            'staff_members': 'Dr. Robert Chen (Lead Storage Officer)'
+        }])
+    finally:
+        cur.close()
+        conn.close()
+        conn.close()
+
+# ============================================================================
+# 6. ALLOCATIONS & CHECKUPS (allocations, clinical_checkups)
+# ============================================================================
+@app.route('/api/allocations', methods=['GET'])
+def get_allocations():
+    conn = get_db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT 
+                CONCAT('ALC-', a.allocation_id) AS id,
+                a.allocation_id,
+                a.request_id,
+                CONCAT('REQ-', a.request_id) AS request_code,
+                a.unit_id,
+                bu.unit_number,
+                bu.unit_number AS barcode,
+                bu.blood_group,
+                a.source_facility,
+                a.destination_hospital,
+                a.destination_hospital AS hospital,
+                DATE_FORMAT(a.dispatch_date, '%Y-%m-%d %H:%i') AS dispatch_date,
+                DATE_FORMAT(a.dispatch_date, '%Y-%m-%d %H:%i') AS date,
+                a.allocation_status,
+                a.allocation_status AS status,
+                a.notes
+            FROM allocations a
+            JOIN blood_units bu ON a.unit_id = bu.unit_id
+            ORDER BY a.allocation_id DESC
+        """)
+        return jsonify(cur.fetchall())
+    finally:
+        cur.close()
+        conn.close()
+
+@app.route('/api/appointments', methods=['GET'])
+def get_appointments():
+    conn = get_db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT 
+                CONCAT('CHK-', c.checkup_id) AS id,
+                c.checkup_id,
+                c.donor_id,
+                d.full_name,
+                d.full_name AS donor_name,
+                d.phone AS donor_phone,
+                d.blood_group,
+                h.name AS hospital_name,
+                c.checkup_date,
+                DATE_FORMAT(c.checkup_date, '%Y-%m-%d') AS date,
+                DATE_FORMAT(c.time_slot, '%H:%i') AS time_slot,
+                DATE_FORMAT(c.time_slot, '%H:%i') AS timeslot,
+                c.appointment_status,
+                c.appointment_status AS status,
+                c.decision,
+                c.remarks
+            FROM clinical_checkups c
+            JOIN donors d ON c.donor_id = d.donor_id
+            JOIN hospitals h ON c.hospital_id = h.hospital_id
+            ORDER BY c.checkup_id DESC
+        """)
+        return jsonify(cur.fetchall())
+    finally:
+        cur.close()
+        conn.close()
+
+@app.route('/api/medical-tests', methods=['GET'])
+def get_medical_tests():
+    conn = get_db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT 
+                CONCAT('CHK-', c.checkup_id) AS id,
+                c.checkup_id,
+                d.full_name,
+                d.full_name AS donor_name,
+                d.blood_group,
+                'Dr. Clinical Examiner' AS tested_by,
+                DATE_FORMAT(c.checkup_date, '%Y-%m-%d') AS checkup_date,
+                DATE_FORMAT(c.checkup_date, '%Y-%m-%d') AS test_date,
+                CAST(c.hemoglobin_level AS CHAR) AS hemoglobin_level,
+                CAST(c.hemoglobin_level AS CHAR) AS hemoglobin,
+                c.bp_systolic,
+                c.bp_diastolic,
+                CONCAT(c.bp_systolic, '/', c.bp_diastolic) AS bp,
+                CAST(c.temperature_celsius AS CHAR) AS temperature_celsius,
+                CAST(c.temperature_celsius AS CHAR) AS temp,
+                c.pulse_rate,
+                c.decision,
+                IF(c.decision = 'ACCEPTED', 'PASSED', 'FAILED') AS result,
+                IF(c.decision = 'ACCEPTED', 'ELIGIBLE', 'TEMPORARILY_DEFERRED') AS eligibility,
+                c.remarks
+            FROM clinical_checkups c
+            JOIN donors d ON c.donor_id = d.donor_id
+            ORDER BY c.checkup_id DESC
+        """)
+        return jsonify(cur.fetchall())
+    finally:
+        cur.close()
+        conn.close()
+
 if __name__ == '__main__':
-    app.run(port=5000, debug=True)
+    print("HemoCare BBMS Backend Server running on http://127.0.0.1:5000")
+    app.run(host='0.0.0.0', port=5000, debug=True)
